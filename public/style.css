@@ -235,6 +235,7 @@ tbody tr:hover { background: #fbfcfe; }
 .empty { grid-column: 1/-1; padding: 3rem 1.5rem; border: 1px dashed #d7e1e8; border-radius: 20px; background: rgba(255, 255, 255, .65); color: #687582; text-align: center; line-height: 1.95; }
 .nowrap { white-space: nowrap; }
 .loading { display: grid; place-items: center; min-height: 100vh; color: #687582; background: #f7f9fb; }
+#watermark { position: fixed; inset: 0; z-index: 90; pointer-events: none; user-select: none; opacity: .075; background-repeat: repeat; background-size: 380px 230px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 #toast { position: fixed; bottom: 1.5rem; left: 50%; z-index: 100; display: none; transform: translateX(-50%); max-width: min(600px, 90vw); padding: .9rem 1.5rem; border: 1px solid rgba(255, 255, 255, .15); border-radius: 16px; background: rgba(37, 58, 72, .96); color: #fff; box-shadow: 0 8px 35px rgba(24, 44, 61, .15); font-size: .9375rem; text-align: center; line-height: 1.8; }
 #toast.show { display: block; }
 dialog { width: min(650px, 92vw); max-height: 86dvh; padding: 2rem; border: 1px solid #e6edf2; border-radius: 26px; background: #fff; color: var(--ink); box-shadow: 0 24px 90px rgba(26, 44, 61, .22); }

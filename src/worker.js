@@ -113,7 +113,7 @@ async function route(request,env,ctx,fetcher) {
   }
   if(path==='/api/admin/seed' && method==='POST') {
     for(const input of sampleExams) {
-      const e=validateExam(input),id='sample-'+e.department;
+      const e=validateExam(input),id=input.id||'sample-'+e.department;
       await stmt(env,'INSERT OR IGNORE INTO exams VALUES(?,?,?,?,?,?,0,?)',id,e.title,e.department,e.duration_minutes,e.pass_percent,JSON.stringify(e.questions),Date.now()).run();
     }
     await audit(env,user.email,'seed_draft_exams','samples');return json({ok:true});
