@@ -21,7 +21,12 @@
     "AI_ENABLED": "false",
     "AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     "ADMIN_EMAILS": "phop@super-x.tech",
-    "EMAIL_FROM": "SuperX Academy <noreply@super-x.tech>"
+    "EMAIL_FROM": "SuperX Academy <noreply@super-x.tech>",
+    "APP_URL": "https://employee-assessment-hub.mnbfri9.workers.dev",
+    "LARK_APP_ID": "cli_ab8d290c35389e26",
+    "LARK_TENANT_KEY": "196a1a064dc1d946",
+    "LARK_LOGIN_SCOPES": "contact:user.email:readonly",
+    "LARK_EMAIL_DOMAIN": "super-x.tech"
   },
   "triggers": {
     "crons": [

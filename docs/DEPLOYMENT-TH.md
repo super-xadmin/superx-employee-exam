@@ -19,6 +19,7 @@
 | `LARK_APP_SECRET` | Secret | App Secret สำหรับ Lark Login |
 | `LARK_TENANT_KEY` | vars | องค์กร Lark ที่อนุญาต ต้องตรงกับ user_info |
 | `LARK_LOGIN_SCOPES` | vars (ถ้าปรับ) | scopes เพิ่มเติม ถ้าจำเป็น ค่าเริ่มต้นไม่ขอสิทธิ์อ่านอีเมล |
+| `LARK_EMAIL_DOMAIN` | vars | เปิดการจับคู่บัญชี Lark กับพนักงานอัตโนมัติ เมื่ออีเมลในโปรไฟล์ Lark (โดเมนนี้ เช่น `super-x.tech`) ตรงกับพนักงานที่ยังไม่ผูก Lark ใช้กับพนักงานเท่านั้น ต้องขอสิทธิ์ `contact:user.email:readonly` และตั้ง `LARK_LOGIN_SCOPES` |
 | `LARK_ADMIN_BINDINGS` | vars | JSON string ผูก Open ID ของผู้ประเมินกับอีเมลที่อยู่ใน ADMIN_EMAILS |
 | `APP_URL` | vars | URL จริง เช่น `https://academy.super-x.tech` |
 | `COMPANY_NAME` | vars | ชื่อบนเว็บ |
