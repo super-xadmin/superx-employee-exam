@@ -26,7 +26,8 @@
     "LARK_APP_ID": "cli_ab8d290c35389e26",
     "LARK_TENANT_KEY": "196a1a064dc1d946",
     "LARK_LOGIN_SCOPES": "contact:user.email:readonly",
-    "LARK_EMAIL_DOMAIN": "super-x.tech"
+    "LARK_EMAIL_DOMAIN": "super-x.tech",
+    "LARK_ADMIN_BINDINGS": "{\"ou_e95ebc2a5cefca16f84e77616778862f\":\"phop@super-x.tech\"}"
   },
   "triggers": {
     "crons": [
