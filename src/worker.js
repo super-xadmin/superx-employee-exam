@@ -1,4 +1,4 @@
-import { HttpError, requireValue, text, DEPARTMENTS, DEPARTMENTS_EN, optionalText, certificateNumber, validateExam, publicExam, normalizeAnswers, grade, csvCell } from './domain.js';
+import { HttpError, requireValue, text, DEPARTMENTS, DEPARTMENTS_EN, optionalText, certificateNumber, validateExam, publicExam, normalizeAnswers, grade, regrade, csvCell } from './domain.js';
 import { readSession, cookie } from './auth.js';
 import { finalize, expireAttempts, dispatchNotifications, aiAnalysis } from './services.js';
 import {handleIdentity,authAvailability,normalizeEmail,adminEmails} from './identity.js';
@@ -98,12 +98,13 @@ async function route(request,env,ctx,fetcher) {
   if(path==='/api/admin/overview' && method==='GET') {
     await expireAttempts(env);
     const {results:employees}=await env.DB.prepare('SELECT id,name,name_en,email,department,lark_open_id,active,created_at FROM employees ORDER BY created_at DESC LIMIT 1000').all();
-    const {results:exams}=await env.DB.prepare('SELECT * FROM exams ORDER BY created_at DESC LIMIT 200').all();
+    const {results:exams}=await env.DB.prepare('SELECT * FROM exams WHERE archived=0 ORDER BY created_at DESC LIMIT 200').all();
+    const {results:counts}=await env.DB.prepare('SELECT exam_id,count(*) AS n FROM attempts GROUP BY exam_id').all();
     const {results:attempts}=await env.DB.prepare('SELECT a.id,a.employee_id,a.exam_id,a.attempt_no,a.status,a.result_json,a.submitted_at,a.started_at,e.name,e.department FROM attempts a JOIN employees e ON e.id=a.employee_id ORDER BY a.started_at DESC LIMIT 1000').all();
     const {results:notifications}=await env.DB.prepare('SELECT id,attempt_id,state,tries,last_error,sent_at FROM notifications ORDER BY rowid DESC LIMIT 100').all();
     const {results:audit}=await env.DB.prepare('SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 30').all();
     const {results:hr_users}=await env.DB.prepare('SELECT email,name,active,lark_open_id,created_at FROM hr_users ORDER BY created_at DESC').all();
-    return json({hr_users,employees,exams:exams.map(({questions_json,...e})=>({...e,questions:JSON.parse(questions_json)})),attempts:attempts.map(({result_json,...a})=>({...a,result:result_json?JSON.parse(result_json):null})),notifications,audit,integrations:{lark:!!env.LARK_WEBHOOK_URL,ai:env.AI_ENABLED==='true' && !!env.AI}});
+    return json({hr_users,employees,exams:exams.map(({questions_json,...e})=>({...e,questions:JSON.parse(questions_json),attempt_count:counts.find(c=>c.exam_id===e.id)?.n||0})),attempts:attempts.map(({result_json,...a})=>({...a,result:result_json?JSON.parse(result_json):null})),notifications,audit,integrations:{lark:!!env.LARK_WEBHOOK_URL,ai:env.AI_ENABLED==='true' && !!env.AI}});
   }
   if(path==='/api/admin/employees' && method==='POST') {
     const b=await body(request),id=text(b.id,80),name=text(b.name,200);requireValue(/^[a-zA-Z0-9_-]+$/.test(id),'รหัสพนักงานใช้ตัวอักษรอังกฤษ ตัวเลข _ หรือ -');requireValue(typeof b.department==='string' && Object.hasOwn(DEPARTMENTS,b.department),'ฝ่ายไม่ถูกต้อง');
@@ -144,10 +145,39 @@ async function route(request,env,ctx,fetcher) {
     }
     await audit(env,user.email,'seed_draft_exams','samples');return json({ok:true});
   }
+  const examEdit=path.match(/^\/api\/admin\/exams\/([\w-]+)\/(update|delete)$/);
+  if(examEdit && method==='POST') {
+    const old=await stmt(env,'SELECT id,title FROM exams WHERE id=? AND archived=0',examEdit[1]).first();requireValue(old,'ไม่พบชุดข้อสอบ',404);
+    if(examEdit[2]==='update'){
+      const exam=validateExam(await body(request));
+      await stmt(env,'UPDATE exams SET title=?,title_en=?,department=?,duration_minutes=?,pass_percent=?,questions_json=? WHERE id=?',exam.title,exam.title_en,exam.department,exam.duration_minutes,exam.pass_percent,JSON.stringify(exam.questions),old.id).run();
+      await audit(env,user.email,'edit_exam',old.id);return json({ok:true});
+    }
+    // มีผลสอบแล้ว → ซ่อนและปิดสอบ (เก็บประวัติ) · ยังไม่มีผลสอบ → ลบจริง
+    const used=await stmt(env,'SELECT count(*) AS n FROM attempts WHERE exam_id=?',old.id).first();
+    if(used.n){await stmt(env,'UPDATE exams SET archived=1,published=0 WHERE id=?',old.id).run();await audit(env,user.email,'archive_exam',old.id);return json({ok:true,archived:true});}
+    await stmt(env,'DELETE FROM exams WHERE id=?',old.id).run();await audit(env,user.email,'delete_exam',old.id+' | '+old.title.slice(0,150));return json({ok:true,deleted:true});
+  }
+  const attemptEdit=path.match(/^\/api\/admin\/attempts\/([\w-]+)\/(regrade|delete)$/);
+  if(attemptEdit && method==='POST') {
+    const b=await body(request),a=await stmt(env,'SELECT a.*,e.name FROM attempts a JOIN employees e ON e.id=a.employee_id WHERE a.id=?',attemptEdit[1]).first();requireValue(a,'ไม่พบผลสอบ',404);
+    const reason=text(b.reason,500),title=JSON.parse(a.snapshot_json).title;
+    if(attemptEdit[2]==='delete'){
+      await env.DB.batch([stmt(env,'DELETE FROM notifications WHERE attempt_id=?',a.id),stmt(env,'DELETE FROM attempts WHERE id=?',a.id)]);
+      await audit(env,user.email,'delete_attempt',`${a.employee_id} · ${title.slice(0,80)} · ครั้งที่ ${a.attempt_no} · ${a.status} | ${reason}`);return json({ok:true});
+    }
+    requireValue(['passed','failed'].includes(a.status),'แก้คะแนนได้เฉพาะผลสอบที่สรุปแล้ว (ผลที่รอประเมินให้ใช้การตรวจตามปกติ)',409);
+    requireValue(b.revision===a.revision,'ผลสอบมีการเปลี่ยนแปลง กรุณาโหลดใหม่',409);
+    const before=JSON.parse(a.result_json),result=regrade(JSON.parse(a.snapshot_json),b.scores);
+    const change=await stmt(env,"UPDATE attempts SET result_json=?,status=?,reviewed_at=?,reviewer=?,revision=revision+1 WHERE id=? AND revision=? AND status IN ('passed','failed')",JSON.stringify(result),result.status,Date.now(),user.email,a.id,a.revision).run();
+    requireValue(change.meta.changes,'ผลสอบมีการเปลี่ยนแปลง กรุณาโหลดใหม่',409);
+    await audit(env,user.email,'regrade_attempt',`${a.employee_id} · ${title.slice(0,80)} · ${before.percent}% ${a.status} → ${result.percent}% ${result.status} | ${reason}`);
+    ctx.waitUntil(dispatchNotifications(env).catch(()=>{}));return json({ok:true,result});
+  }
   const pub=path.match(/^\/api\/admin\/exams\/([\w-]+)\/publish$/);
   if(pub && method==='POST') {
     const b=await body(request);requireValue(typeof b.published==='boolean','สถานะไม่ถูกต้อง');
-    const r=await stmt(env,'UPDATE exams SET published=? WHERE id=?',b.published?1:0,pub[1]).run();requireValue(r.meta.changes,'ไม่พบข้อสอบ',404);await audit(env,user.email,b.published?'publish_exam':'close_exam',pub[1]);return json({ok:true});
+    const r=await stmt(env,'UPDATE exams SET published=? WHERE id=? AND archived=0',b.published?1:0,pub[1]).run();requireValue(r.meta.changes,'ไม่พบข้อสอบ',404);await audit(env,user.email,b.published?'publish_exam':'close_exam',pub[1]);return json({ok:true});
   }
   const review=path.match(/^\/api\/admin\/attempts\/([\w-]+)\/(review|analyze)$/);
   if(review && method==='POST') {

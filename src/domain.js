@@ -53,6 +53,18 @@ export function grade(exam, answers, reviews = null) {
   const percent = Math.floor(rawPercent * 100) / 100;
   return { questions, total, earned, percent, pass_percent: exam.pass_percent, status: pending ? 'pending_review' : rawPercent >= exam.pass_percent ? 'passed' : 'failed' };
 }
+// แก้คะแนนผลสอบที่สรุปแล้ว: ผู้ประเมินกำหนดคะแนนได้ทุกข้อ แล้วคำนวณผ่าน/ไม่ผ่านใหม่ตามเกณฑ์ของข้อสอบ
+export function regrade(exam, scores) {
+  requireValue(scores && typeof scores === 'object' && !Array.isArray(scores), 'กรุณาระบุคะแนนให้ครบทุกข้อ');
+  const questions = exam.questions.map(q => {
+    const r = scores[q.id];
+    requireValue(r && Number.isFinite(r.score) && r.score >= 0 && r.score <= q.points, `คะแนน ${q.id} ต้องอยู่ระหว่าง 0–${q.points}`);
+    const feedback = typeof r.feedback === 'string' && r.feedback.trim() ? r.feedback.trim().slice(0, 2000) : (q.type === 'mcq' ? (q.explanation || '') : '');
+    return { id: q.id, topic: q.topic, max: q.points, score: r.score, feedback };
+  });
+  const total = questions.reduce((s, q) => s + q.max, 0), earned = questions.reduce((s, q) => s + q.score, 0), rawPercent = earned / total * 100;
+  return { questions, total, earned, percent: Math.floor(rawPercent * 100) / 100, pass_percent: exam.pass_percent, status: rawPercent >= exam.pass_percent ? 'passed' : 'failed' };
+}
 export function rubricAnalysis(exam, answers) {
   return { source: 'rubric', notice: 'ตรวจหาคำสำคัญเพื่อช่วยผู้ประเมิน ไม่ใช่คะแนนและไม่ยืนยันความถูกต้องของคำตอบ', questions: exam.questions.filter(q => q.type === 'essay').map(q => {
     const answer = String(answers[q.id] || '').normalize('NFKC').toLocaleLowerCase('th');

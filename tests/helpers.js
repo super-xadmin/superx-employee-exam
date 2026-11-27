@@ -2,7 +2,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {createWorker} from '../src/worker.js';
 export function sqliteD1() {
-  const db = new DatabaseSync(':memory:');db.exec(readFileSync(new URL('../migrations/0001_initial.sql',import.meta.url),'utf8'));db.exec(readFileSync(new URL('../migrations/0002_email_lark_auth.sql',import.meta.url),'utf8'));db.exec(readFileSync(new URL('../migrations/0003_lark_pkce.sql',import.meta.url),'utf8'));db.exec(readFileSync(new URL('../migrations/0004_hr_certificates.sql',import.meta.url),'utf8'));
+  const db = new DatabaseSync(':memory:');db.exec(readFileSync(new URL('../migrations/0001_initial.sql',import.meta.url),'utf8'));db.exec(readFileSync(new URL('../migrations/0002_email_lark_auth.sql',import.meta.url),'utf8'));db.exec(readFileSync(new URL('../migrations/0003_lark_pkce.sql',import.meta.url),'utf8'));db.exec(readFileSync(new URL('../migrations/0004_hr_certificates.sql',import.meta.url),'utf8'));db.exec(readFileSync(new URL('../migrations/0005_exam_archive.sql',import.meta.url),'utf8'));
   function prepare(sql,args=[]) {
     return {bind(...values){return prepare(sql,values);},async first(){return db.prepare(sql).get(...args)||null;},async all(){return {results:db.prepare(sql).all(...args)};},async run(){const r=db.prepare(sql).run(...args);return {success:true,meta:{changes:Number(r.changes)}};},_run(){return this.run();}};
   }

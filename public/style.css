@@ -406,3 +406,13 @@ body.cert-mode #watermark { display: none; }
   body.cert-mode .certificate { width: 297mm; height: 210mm; aspect-ratio: auto; box-shadow: none; padding: 7mm; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   body.cert-mode .cert-inner { font-size: 16px; }
 }
+/* ---------- แก้ไข / ลบ ---------- */
+button.danger { color: #b13b4b; border-color: #f0c9cf; }
+button.danger:not(.secondary) { background: #b13b4b; color: #fff; border-color: #b13b4b; }
+button.danger:not(.secondary):hover { background: #962f3e; }
+.exam-actions { gap: .5rem; }
+.exam-actions button { flex: 1; }
+.regrade-row { display: grid; grid-template-columns: 1fr auto; gap: .4rem 1rem; align-items: center; padding: .7rem 0; border-bottom: 1px solid var(--line); }
+.regrade-row textarea { grid-column: 1 / -1; min-height: 3.2rem; }
+.regrade-score { display: flex; align-items: center; gap: .4rem; white-space: nowrap; }
+.regrade-score input { width: 5.5rem; }
