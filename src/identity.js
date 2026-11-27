@@ -11,6 +11,8 @@ export function adminEmails(env){return String(env.ADMIN_EMAILS||'').split(',').
 export function authAvailability(env){return {email:!!(env.RESEND_API_KEY && env.EMAIL_FROM && env.SESSION_SECRET?.length>=32),lark:!!(env.LARK_APP_ID && env.LARK_APP_SECRET && env.LARK_TENANT_KEY && env.APP_URL && env.SESSION_SECRET?.length>=32)};}
 export async function principalForEmail(env,email){
  if(adminEmails(env).includes(email))return {role:'admin',id:'admin:'+await hash(email),email,name:email,version:1};
+ const hr=await sql(env,'SELECT email,name,auth_version FROM hr_users WHERE email=? AND active=1',email).first();
+ if(hr)return {role:'hr',id:'hr:'+hr.email.toLowerCase(),email:hr.email.toLowerCase(),name:hr.name,version:hr.auth_version};
  const e=await sql(env,'SELECT id,name,email,department,auth_version FROM employees WHERE email=? AND active=1',email).first();
  return e?{role:'employee',id:e.id,email:e.email,name:e.name,department:e.department,version:e.auth_version}:null;
 }
@@ -34,17 +36,21 @@ async function signedIn(request,env,principal,method){
 }
 // จับคู่บัญชี Lark กับพนักงานอัตโนมัติ (เปิดเมื่อตั้ง LARK_EMAIL_DOMAIN เท่านั้น)
 // เงื่อนไข: อยู่ใน tenant บริษัท (ตรวจแล้วก่อนหน้า) + อีเมลในโปรไฟล์ Lark เป็นโดเมนบริษัท + ตรงกับพนักงานที่ผู้ดูแลเพิ่มไว้และยังไม่ผูก Lark
-// ใช้กับพนักงานเท่านั้น ผู้ประเมิน (admin) ยังต้องผูกผ่าน LARK_ADMIN_BINDINGS หรือเข้าด้วยอีเมล OTP
+// ใช้กับพนักงานและบัญชี HR ที่ผู้ประเมินเพิ่มไว้ ผู้ประเมิน (admin) ยังต้องผูกผ่าน LARK_ADMIN_BINDINGS หรือเข้าด้วยอีเมล OTP
 async function autoBindByCompanyEmail(env,profile){
  const domain=String(env.LARK_EMAIL_DOMAIN||'').trim().toLowerCase().replace(/^@/,'');if(!domain)return null;
  for(const raw of [profile.enterprise_email,profile.email]){
   if(typeof raw!=='string'||!raw.trim())continue;
   let email;try{email=normalizeEmail(raw);}catch{continue;}
   if(!email.endsWith('@'+domain)||adminEmails(env).includes(email))continue;
-  const emp=await sql(env,'SELECT id FROM employees WHERE email=? AND active=1 AND lark_open_id IS NULL',email).first();if(!emp)continue;
-  const r=await sql(env,'UPDATE employees SET lark_open_id=?,lark_tenant_key=? WHERE id=? AND lark_open_id IS NULL AND NOT EXISTS (SELECT 1 FROM employees WHERE lark_open_id=?)',profile.open_id,profile.tenant_key,emp.id,profile.open_id).run();
+  const taken='NOT EXISTS (SELECT 1 FROM employees WHERE lark_open_id=?) AND NOT EXISTS (SELECT 1 FROM hr_users WHERE lark_open_id=?)';
+  const emp=await sql(env,'SELECT id FROM employees WHERE email=? AND active=1 AND lark_open_id IS NULL',email).first();
+  const hr=emp?null:await sql(env,'SELECT email FROM hr_users WHERE email=? AND active=1 AND lark_open_id IS NULL',email).first();
+  if(!emp&&!hr)continue;
+  const r=emp?await sql(env,`UPDATE employees SET lark_open_id=?,lark_tenant_key=? WHERE id=? AND lark_open_id IS NULL AND ${taken}`,profile.open_id,profile.tenant_key,emp.id,profile.open_id,profile.open_id).run()
+   :await sql(env,`UPDATE hr_users SET lark_open_id=?,lark_tenant_key=? WHERE email=? AND lark_open_id IS NULL AND ${taken}`,profile.open_id,profile.tenant_key,hr.email,profile.open_id,profile.open_id).run();
   if(!r.meta.changes)return null;
-  await sql(env,'INSERT INTO audit_log VALUES(?,?,?,?,?)',crypto.randomUUID(),email,'lark_auto_bind',emp.id,Date.now()).run();
+  await sql(env,'INSERT INTO audit_log VALUES(?,?,?,?,?)',crypto.randomUUID(),email,'lark_auto_bind',emp?emp.id:'hr:'+email,Date.now()).run();
   return principalForEmail(env,email);
  }
  return null;
@@ -111,7 +117,9 @@ export async function handleIdentity(request,env,readBody,fetcher=fetch){
     const email=normalizeEmail(admins[profile.open_id]);requireValue(adminEmails(env).includes(email),'ผู้ประเมินยังไม่ได้รับสิทธิ์',403);principal=await principalForEmail(env,email);
    }else{
     const bound=await sql(env,'SELECT id,email FROM employees WHERE lark_open_id=? AND lark_tenant_key=? AND active=1',profile.open_id,profile.tenant_key).first();
+    const boundHr=bound?null:await sql(env,'SELECT email FROM hr_users WHERE lark_open_id=? AND lark_tenant_key=? AND active=1',profile.open_id,profile.tenant_key).first();
     if(bound?.email){principal=await principalForEmail(env,bound.email);requireValue(principal?.role==='employee','บัญชีนี้ไม่ใช่พนักงาน',403);}
+    else if(boundHr){principal=await principalForEmail(env,boundHr.email.toLowerCase());requireValue(principal?.role==='hr','บัญชีนี้ไม่ใช่ฝ่าย HR',403);}
     else if(!bound)principal=await autoBindByCompanyEmail(env,profile);
    }
    requireValue(principal,'บัญชี Lark นี้ยังไม่ได้รับการผูกสิทธิ์จากผู้ดูแล',403);

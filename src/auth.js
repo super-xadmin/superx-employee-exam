@@ -21,7 +21,7 @@ export async function readSession(request, env) {
     const [data, sig, extra] = token.split('.');
     if (extra || !data || !sig || !await crypto.subtle.verify('HMAC', await key(env.SESSION_SECRET), from64(sig), enc.encode(data))) throw new Error();
     const s = JSON.parse(new TextDecoder().decode(from64(data.replaceAll('-','+').replaceAll('_','/'))));
-    if (!Number.isFinite(s.exp) || s.exp <= Date.now() || !['admin','employee'].includes(s.role)) throw new Error();
+    if (!Number.isFinite(s.exp) || s.exp <= Date.now() || !['admin','employee','hr'].includes(s.role)) throw new Error();
     if (!['email','lark'].includes(s.auth_method) || typeof s.email!=='string') throw new Error();
     if (s.role === 'admin') {
       if (!String(env.ADMIN_EMAILS||'').split(',').map(x=>x.trim().toLowerCase()).includes(s.email)) throw new Error();
@@ -31,8 +31,14 @@ export async function readSession(request, env) {
       }
       return s;
     }
+    if (s.role === 'hr') {
+      const h = await env.DB.prepare('SELECT email, name, auth_version, lark_open_id, lark_tenant_key FROM hr_users WHERE email = ? AND active = 1').bind(s.email).first();
+      if (!h || h.auth_version !== s.version || h.email.toLowerCase() !== s.email) throw new Error();
+      if(s.auth_method==='lark' && (h.lark_open_id!==s.lark_open_id || h.lark_tenant_key!==env.LARK_TENANT_KEY || h.lark_tenant_key!==s.lark_tenant_key))throw new Error();
+      return {...s, name: h.name};
+    }
     if (s.role === 'employee') {
-      const e = await env.DB.prepare('SELECT id, name, email, department, auth_version, lark_open_id, lark_tenant_key FROM employees WHERE id = ? AND active = 1').bind(s.id).first();
+      const e = await env.DB.prepare('SELECT id, name, name_en, email, department, auth_version, lark_open_id, lark_tenant_key FROM employees WHERE id = ? AND active = 1').bind(s.id).first();
       if (!e || e.auth_version !== s.version || e.email !== s.email) throw new Error();
       if(s.auth_method==='lark' && (e.lark_open_id!==s.lark_open_id || e.lark_tenant_key!==env.LARK_TENANT_KEY || e.lark_tenant_key!==s.lark_tenant_key))throw new Error();
       return {...s, ...e};

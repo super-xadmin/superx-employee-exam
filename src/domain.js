@@ -1,4 +1,7 @@
 export const DEPARTMENTS = { technical: 'ฝ่ายเทคนิค', installation: 'ฝ่ายติดตั้ง', sales: 'ฝ่ายขาย' };
+export const DEPARTMENTS_EN = { technical: 'Technical Department', installation: 'Installation Department', sales: 'Sales Department' };
+export function optionalText(value, max = 200) { if (value == null || (typeof value === 'string' && !value.trim())) return null; return text(value, max); }
+export function certificateNumber(attempt) { return 'SXA-' + new Date(attempt.reviewed_at || attempt.submitted_at).getUTCFullYear() + '-' + String(attempt.id).replace(/-/g, '').slice(0, 8).toUpperCase(); }
 export class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
 export function requireValue(ok, message, status = 400) { if (!ok) throw new HttpError(status, message); }
 export function text(value, max = 200) { requireValue(typeof value === 'string' && value.trim().length > 0 && value.length <= max, 'ข้อมูลไม่ครบหรือยาวเกินกำหนด'); return value.trim(); }
@@ -23,7 +26,7 @@ export function validateExam(input) {
     }
     return out;
   });
-  return { title, department: input.department, duration_minutes: input.duration_minutes, pass_percent: input.pass_percent, questions };
+  return { title, title_en: optionalText(input.title_en), department: input.department, duration_minutes: input.duration_minutes, pass_percent: input.pass_percent, questions };
 }
 export function publicExam(exam) {
   return { id: exam.id, title: exam.title, department: exam.department, duration_minutes: exam.duration_minutes, pass_percent: exam.pass_percent,

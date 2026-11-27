@@ -1,4 +1,4 @@
-import { HttpError, requireValue, text, DEPARTMENTS, validateExam, publicExam, normalizeAnswers, grade, csvCell } from './domain.js';
+import { HttpError, requireValue, text, DEPARTMENTS, DEPARTMENTS_EN, optionalText, certificateNumber, validateExam, publicExam, normalizeAnswers, grade, csvCell } from './domain.js';
 import { readSession, cookie } from './auth.js';
 import { finalize, expireAttempts, dispatchNotifications, aiAnalysis } from './services.js';
 import {handleIdentity,authAvailability,normalizeEmail,adminEmails} from './identity.js';
@@ -21,6 +21,13 @@ function serializeAttempt(a,admin=false) {
   if(admin)out.analysis=a.analysis_json?JSON.parse(a.analysis_json):null;
   return out;
 }
+const INSERT_EXAM='INSERT INTO exams(id,title,department,duration_minutes,pass_percent,questions_json,published,created_at,title_en) VALUES(?,?,?,?,?,?,0,?,?)';
+async function isHrEmail(env,email){return !!await stmt(env,'SELECT email FROM hr_users WHERE email=?',email).first();}
+async function exportCsv(env){
+  const {results}=await env.DB.prepare('SELECT a.*,e.name,e.email,e.department FROM attempts a JOIN employees e ON e.id=a.employee_id ORDER BY a.started_at DESC').all();
+  const rows=[['รหัสพนักงาน','ชื่อ','อีเมล','ฝ่าย','ข้อสอบ','ครั้งที่','สถานะ','คะแนน','เต็ม','เปอร์เซ็นต์','ผู้ประเมิน','เวลาส่ง (UTC)','เลขที่ใบประกาศ'],...results.map(a=>{const r=a.result_json?JSON.parse(a.result_json):{};return[a.employee_id,a.name,a.email,DEPARTMENTS[a.department],JSON.parse(a.snapshot_json).title,a.attempt_no,a.status,r.earned,r.total,r.percent,a.reviewer,a.submitted_at?new Date(a.submitted_at).toISOString():'',a.status==='passed'?certificateNumber(a):''];})];
+  return new Response('\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),{headers:{'content-type':'text/csv; charset=utf-8','content-disposition':'attachment; filename="exam-results.csv"','cache-control':'no-store'}});
+}
 async function route(request,env,ctx,fetcher) {
   const url=new URL(request.url),path=url.pathname,method=request.method;
   if(!path.startsWith('/api/')) return env.ASSETS.fetch(request);
@@ -29,8 +36,24 @@ async function route(request,env,ctx,fetcher) {
   if(path==='/api/logout' && method==='POST') return json({ok:true},200,{'set-cookie':cookie('',request,true)});
   const identity=await handleIdentity(request,env,body,fetcher);if(identity)return identity;
   const user=await readSession(request,env);
-  if(path==='/api/me' && method==='GET')return json({user:{role:user.role,id:user.id,name:user.name,email:user.email,department:user.department}});
+  if(path==='/api/me' && method==='GET')return json({user:{role:user.role,id:user.id,name:user.name,name_en:user.name_en||null,email:user.email,department:user.department}});
   if(path.startsWith('/api/admin/')) requireValue(user.role==='admin','เฉพาะผู้ประเมิน',403);
+  if(path.startsWith('/api/reports/')) requireValue(['admin','hr'].includes(user.role),'เฉพาะผู้ประเมินหรือฝ่าย HR',403);
+  if(path==='/api/reports/results' && method==='GET') {
+    await expireAttempts(env);
+    const {results:employees}=await env.DB.prepare('SELECT id,name,name_en,email,department,active FROM employees ORDER BY id LIMIT 2000').all();
+    const {results:exams}=await env.DB.prepare('SELECT id,title,department,published FROM exams ORDER BY created_at DESC LIMIT 200').all();
+    const {results:attempts}=await env.DB.prepare("SELECT id,employee_id,exam_id,attempt_no,status,result_json,snapshot_json,submitted_at,reviewed_at FROM attempts ORDER BY started_at DESC LIMIT 5000").all();
+    return json({employees,exams,attempts:attempts.map(a=>{const r=a.result_json?JSON.parse(a.result_json):null,s=JSON.parse(a.snapshot_json);return {id:a.id,employee_id:a.employee_id,exam_id:a.exam_id,title:s.title,department:s.department,attempt_no:a.attempt_no,status:a.status,earned:r?.earned??null,total:r?.total??null,percent:a.status==='pending_review'?null:(r?.percent??null),submitted_at:a.submitted_at,reviewed_at:a.reviewed_at,certificate_no:a.status==='passed'?certificateNumber(a):null};})});
+  }
+  if(path==='/api/reports/export' && method==='GET') return exportCsv(env);
+  const cert=path.match(/^\/api\/certificates\/([\w-]+)$/);
+  if(cert && method==='GET') {
+    const a=await stmt(env,'SELECT a.*,e.name,e.name_en FROM attempts a JOIN employees e ON e.id=a.employee_id WHERE a.id=?',cert[1]).first();
+    requireValue(a && a.status==='passed' && (['admin','hr'].includes(user.role) || a.employee_id===user.id),'ไม่พบใบประกาศสำหรับผลสอบนี้',404);
+    const s=JSON.parse(a.snapshot_json),r=JSON.parse(a.result_json),ex=s.title_en?null:await stmt(env,'SELECT title_en FROM exams WHERE id=?',a.exam_id).first();
+    return json({certificate:{number:certificateNumber(a),attempt_id:a.id,employee_id:a.employee_id,name:a.name,name_en:a.name_en||null,title:s.title,title_en:s.title_en||ex?.title_en||(DEPARTMENTS_EN[s.department]+' Skills Assessment'),department:s.department,department_en:DEPARTMENTS_EN[s.department],percent:r.percent,issued_at:a.reviewed_at||a.submitted_at,company_en:'SuperX AI Co., Ltd.'}});
+  }
   if(path==='/api/exams' && method==='GET') {
     requireValue(user.role==='employee','เฉพาะพนักงาน',403);
     await expireAttempts(env);
@@ -74,25 +97,28 @@ async function route(request,env,ctx,fetcher) {
   }
   if(path==='/api/admin/overview' && method==='GET') {
     await expireAttempts(env);
-    const {results:employees}=await env.DB.prepare('SELECT id,name,email,department,lark_open_id,active,created_at FROM employees ORDER BY created_at DESC LIMIT 1000').all();
+    const {results:employees}=await env.DB.prepare('SELECT id,name,name_en,email,department,lark_open_id,active,created_at FROM employees ORDER BY created_at DESC LIMIT 1000').all();
     const {results:exams}=await env.DB.prepare('SELECT * FROM exams ORDER BY created_at DESC LIMIT 200').all();
     const {results:attempts}=await env.DB.prepare('SELECT a.id,a.employee_id,a.exam_id,a.attempt_no,a.status,a.result_json,a.submitted_at,a.started_at,e.name,e.department FROM attempts a JOIN employees e ON e.id=a.employee_id ORDER BY a.started_at DESC LIMIT 1000').all();
     const {results:notifications}=await env.DB.prepare('SELECT id,attempt_id,state,tries,last_error,sent_at FROM notifications ORDER BY rowid DESC LIMIT 100').all();
     const {results:audit}=await env.DB.prepare('SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 30').all();
-    return json({employees,exams:exams.map(({questions_json,...e})=>({...e,questions:JSON.parse(questions_json)})),attempts:attempts.map(({result_json,...a})=>({...a,result:result_json?JSON.parse(result_json):null})),notifications,audit,integrations:{lark:!!env.LARK_WEBHOOK_URL,ai:env.AI_ENABLED==='true' && !!env.AI}});
+    const {results:hr_users}=await env.DB.prepare('SELECT email,name,active,lark_open_id,created_at FROM hr_users ORDER BY created_at DESC').all();
+    return json({hr_users,employees,exams:exams.map(({questions_json,...e})=>({...e,questions:JSON.parse(questions_json)})),attempts:attempts.map(({result_json,...a})=>({...a,result:result_json?JSON.parse(result_json):null})),notifications,audit,integrations:{lark:!!env.LARK_WEBHOOK_URL,ai:env.AI_ENABLED==='true' && !!env.AI}});
   }
   if(path==='/api/admin/employees' && method==='POST') {
     const b=await body(request),id=text(b.id,80),name=text(b.name,200);requireValue(/^[a-zA-Z0-9_-]+$/.test(id),'รหัสพนักงานใช้ตัวอักษรอังกฤษ ตัวเลข _ หรือ -');requireValue(typeof b.department==='string' && Object.hasOwn(DEPARTMENTS,b.department),'ฝ่ายไม่ถูกต้อง');
-    const email=normalizeEmail(b.email);requireValue(!adminEmails(env).includes(email),'อีเมลนี้เป็นผู้ประเมิน กรุณาใช้อีเมลพนักงาน',409);
+    const email=normalizeEmail(b.email),nameEn=optionalText(b.name_en);requireValue(!adminEmails(env).includes(email),'อีเมลนี้เป็นผู้ประเมิน กรุณาใช้อีเมลพนักงาน',409);requireValue(!await isHrEmail(env,email),'อีเมลนี้เป็นบัญชีฝ่าย HR',409);
     requireValue(!await stmt(env,'SELECT id FROM employees WHERE id=? OR email=?',id,email).first(),'รหัสพนักงานหรืออีเมลนี้มีแล้ว',409);
-    await env.DB.batch([stmt(env,"INSERT INTO employees(id,name,department,email,code_hash,created_at) VALUES(?,?,?,?,'',?)",id,name,b.department,email,Date.now()),stmt(env,'INSERT INTO audit_log VALUES(?,?,?,?,?)',crypto.randomUUID(),user.email,'create_employee',id,Date.now())]);
-    return json({employee:{id,name,email,department:b.department}},201);
+    await env.DB.batch([stmt(env,"INSERT INTO employees(id,name,name_en,department,email,code_hash,created_at) VALUES(?,?,?,?,?,'',?)",id,name,nameEn,b.department,email,Date.now()),stmt(env,'INSERT INTO audit_log VALUES(?,?,?,?,?)',crypto.randomUUID(),user.email,'create_employee',id,Date.now())]);
+    return json({employee:{id,name,name_en:nameEn,email,department:b.department}},201);
   }
-  const emp=path.match(/^\/api\/admin\/employees\/([\w-]+)\/(identity|deactivate)$/);
+  const emp=path.match(/^\/api\/admin\/employees\/([\w-]+)\/(identity|deactivate|profile)$/);
   if(emp && method==='POST') {
     const b=await body(request);
-    if(emp[2]==='identity'){
-      const email=normalizeEmail(b.email);requireValue(!adminEmails(env).includes(email),'อีเมลนี้เป็นผู้ประเมิน',409);
+    if(emp[2]==='profile'){
+      const r=await stmt(env,'UPDATE employees SET name_en=? WHERE id=?',optionalText(b.name_en),emp[1]).run();requireValue(r.meta.changes,'ไม่พบพนักงาน',404);
+    }else if(emp[2]==='identity'){
+      const email=normalizeEmail(b.email);requireValue(!adminEmails(env).includes(email),'อีเมลนี้เป็นผู้ประเมิน',409);requireValue(!await isHrEmail(env,email),'อีเมลนี้เป็นบัญชีฝ่าย HR',409);
       requireValue(!await stmt(env,'SELECT id FROM employees WHERE email=? AND id!=?',email,emp[1]).first(),'อีเมลนี้ถูกใช้แล้ว',409);
       const openId=typeof b.lark_open_id==='string'?b.lark_open_id.trim():'';
       requireValue(!openId || /^ou[_-][a-zA-Z0-9_-]{1,196}$/.test(openId),'Lark Open ID ไม่ถูกต้อง');
@@ -108,13 +134,13 @@ async function route(request,env,ctx,fetcher) {
   }
   if(path==='/api/admin/exams' && method==='POST') {
     const exam=validateExam(await body(request)),id=crypto.randomUUID();
-    await stmt(env,'INSERT INTO exams VALUES(?,?,?,?,?,?,0,?)',id,exam.title,exam.department,exam.duration_minutes,exam.pass_percent,JSON.stringify(exam.questions),Date.now()).run();
+    await stmt(env,INSERT_EXAM,id,exam.title,exam.department,exam.duration_minutes,exam.pass_percent,JSON.stringify(exam.questions),Date.now(),exam.title_en).run();
     await audit(env,user.email,'create_exam',id);return json({id},201);
   }
   if(path==='/api/admin/seed' && method==='POST') {
     for(const input of sampleExams) {
       const e=validateExam(input),id=input.id||'sample-'+e.department;
-      await stmt(env,'INSERT OR IGNORE INTO exams VALUES(?,?,?,?,?,?,0,?)',id,e.title,e.department,e.duration_minutes,e.pass_percent,JSON.stringify(e.questions),Date.now()).run();
+      await stmt(env,INSERT_EXAM.replace('INSERT INTO','INSERT OR IGNORE INTO'),id,e.title,e.department,e.duration_minutes,e.pass_percent,JSON.stringify(e.questions),Date.now(),e.title_en).run();
     }
     await audit(env,user.email,'seed_draft_exams','samples');return json({ok:true});
   }
@@ -141,16 +167,27 @@ async function route(request,env,ctx,fetcher) {
     requireValue(change.meta.changes,'มีผู้ประเมินยืนยันผลไปแล้ว',409);await audit(env,reviewer,'review_attempt',a.id);
     ctx.waitUntil(dispatchNotifications(env).catch(()=>{}));return json({ok:true,result});
   }
+  if(path==='/api/admin/hr' && method==='POST') {
+    const b=await body(request),email=normalizeEmail(b.email),name=text(b.name,200);
+    requireValue(!adminEmails(env).includes(email),'อีเมลนี้เป็นผู้ประเมินอยู่แล้ว',409);
+    requireValue(!await stmt(env,'SELECT id FROM employees WHERE email=?',email).first(),'อีเมลนี้เป็นพนักงานผู้เข้าสอบ',409);
+    const old=await stmt(env,'SELECT active FROM hr_users WHERE email=?',email).first();requireValue(!old?.active,'อีเมลนี้เป็นบัญชี HR อยู่แล้ว',409);
+    if(old)await stmt(env,'UPDATE hr_users SET name=?,active=1,auth_version=auth_version+1 WHERE email=?',name,email).run();
+    else await stmt(env,'INSERT INTO hr_users(email,name,created_at) VALUES(?,?,?)',email,name,Date.now()).run();
+    await audit(env,user.email,'create_hr',email);return json({hr:{email,name}},201);
+  }
+  const hrm=path.match(/^\/api\/admin\/hr\/([^/]+)\/deactivate$/);
+  if(hrm && method==='POST') {
+    const email=normalizeEmail(decodeURIComponent(hrm[1]));
+    const r=await stmt(env,'UPDATE hr_users SET active=0,auth_version=auth_version+1,lark_open_id=NULL,lark_tenant_key=NULL WHERE email=?',email).run();requireValue(r.meta.changes,'ไม่พบบัญชี HR',404);
+    await audit(env,user.email,'deactivate_hr',email);return json({ok:true});
+  }
   if(path==='/api/admin/notifications/retry' && method==='POST') {
     const b=await body(request);requireValue(env.LARK_WEBHOOK_URL,'ยังไม่ได้เชื่อมต่อ Lark',503);
     await stmt(env,"UPDATE notifications SET tries=0,next_at=0 WHERE id=? AND state!='sent' AND lease_until < ?",text(b.id),Date.now()).run();
     ctx.waitUntil(dispatchNotifications(env).catch(()=>{}));return json({ok:true});
   }
-  if(path==='/api/admin/export' && method==='GET') {
-    const {results}=await env.DB.prepare('SELECT a.*,e.name,e.department FROM attempts a JOIN employees e ON e.id=a.employee_id ORDER BY a.started_at DESC').all();
-    const rows=[['รหัสพนักงาน','ชื่อ','ฝ่าย','ข้อสอบ','ครั้งที่','สถานะ','คะแนน','เต็ม','เปอร์เซ็นต์','ผู้ประเมิน','เวลาส่ง (UTC)'],...results.map(a=>{const r=a.result_json?JSON.parse(a.result_json):{};return[a.employee_id,a.name,DEPARTMENTS[a.department],JSON.parse(a.snapshot_json).title,a.attempt_no,a.status,r.earned,r.total,r.percent,a.reviewer,a.submitted_at?new Date(a.submitted_at).toISOString():''];})];
-    return new Response('\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),{headers:{'content-type':'text/csv; charset=utf-8','content-disposition':'attachment; filename="exam-results.csv"','cache-control':'no-store'}});
-  }
+  if(path==='/api/admin/export' && method==='GET') return exportCsv(env);
   throw new HttpError(404,'ไม่พบรายการ');
 }
 export function createWorker(fetcher=(...args)=>fetch(...args)){return {
